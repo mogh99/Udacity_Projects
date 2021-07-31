@@ -1,9 +1,10 @@
 import argparse
-from types import new_class
 import torch
+import numpy as np
 import torch.nn as nn
-
 import torchvision.models as models
+
+from torch import cuda
 from torchvision import datasets, models, transforms
 
 '''
@@ -49,18 +50,18 @@ def argument_parser():
                                 "googlenet", "mobilenet_v2", "mobilenet_v3_large",
                                 "mobilenet_v3_small"],
                         help="Select the network architecture", 
-                        metavar="network_name", dest="architecture")
+                        dest="architecture")
     #Hyperparameters
     #Learning Rate
     parser.add_argument( "--learning-rate", nargs="?", default=0.01, type=float, 
                         help="Optimizer learning rate", metavar="lr", dest="lr")
     #Number of Hidden Units
-    parser.add_argument("--hidden-nodes", nargs="+", metavar="nodes", dest="nodes",
+    parser.add_argument("--hidden-nodes", nargs="+", metavar="nodes", dest="nodes", type=int,
                         help="Specify the hidden nodes channels as a list e.g. 128, 256\
-                              will generate two hidden layers", default=[0])
+                              will generate two hidden layers", default=[])
     #Number of Epochs
     parser.add_argument("--epochs", nargs="?", default=5, type=int,
-                        help="Number of epochs", metavar="epoch", dest="epochs")
+                        help="Number of epochs", metavar="epochs", dest="epochs")
     #Use Cuda
     parser.add_argument("--cuda", nargs="?", default=False, type=bool,
                         help="Use cuda", metavar="bool", dest="cuda")
@@ -111,7 +112,7 @@ def load_dataset(dataset_path):
     print(20*"*"+5*" "+"Data Loading Completed"+5*" "+20*"*")
     print("\n")
 
-    return [train_loader, valid_loader, test_loader], num_classes 
+    return {"train":train_loader, "valid":valid_loader, "test":test_loader}, num_classes, train_dataset.class_to_idx
 
 
 #To be able to add the new classifier to the choosen network architecture.
@@ -154,23 +155,180 @@ def classifier_build(old_classifier, hidden_nodes, num_classes):
     new_classifier = []
 
     hidden_nodes.insert(0, in_features)
-    
+    hidden_nodes.append(num_classes)
+
     for index in range(0, len(hidden_nodes)):
-        if hidden_nodes[index] != 0 and index < len(hidden_nodes):
+        if index < (len(hidden_nodes) - 1):
             new_classifier.append(nn.Linear(hidden_nodes[index], hidden_nodes[index+1]))
-            
-    #new_classifier.append(nn.Linear(123,123))
-    #new_classifier.append(nn.ReLU())
-    #new_classifier.append(nn.Dropout(0.5))
+            #Add ReLU and Dropout to all the layers except the last layer.
+            if index < (len(hidden_nodes) - 2):
+                new_classifier.append(nn.ReLU())
+                new_classifier.append(nn.Dropout(0.5))
 
     return nn.Sequential(*new_classifier)
 
-def optimizer_criterion():
-    pass
+def optimizer_criterion(parameters, learning_rate):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
+
+    return optimizer, criterion
+    
+def train_validation(n_epochs, loaders, model, optimizer, criterion, using_cuda): 
+    print(20*"*"+5*" "+"Train The Model"+5*" "+20*"*")
+   
+    for epoch in range(1, n_epochs+1):
+        train_loss = 0.0
+        valid_loss = 0.0
+        train_correct = 0
+        valid_correct = 0
+
+        model.train()
+        if using_cuda:
+            model.cuda()
+            
+        for batch_idx, (data, target) in enumerate(loaders['train']):
+            # move to GPU
+            if using_cuda:
+                data, target = data.cuda(), target.cuda()
+
+            # clear the gradients of all optimized variables
+            optimizer.zero_grad()
+            # forward pass: compute predicted outputs by passing inputs to the model
+            output = model(data)
+            # calculate the loss
+            loss = criterion(output, target)
+            # backward pass: compute gradient of the loss with respect to model parameters
+            loss.backward()
+            # perform a single optimization step (parameter update)
+            optimizer.step()
+            # sum all the correct predictions to find the training accuracy
+            _, predicted_labels = output.max(1)
+            train_correct += (predicted_labels == target).float().sum().cpu().numpy()
+            # update running training loss
+            train_loss += ((1 / (batch_idx + 1)) * (loss.data.item() - train_loss))
+            # print updates every 5 batches
+            if (batch_idx + 1) % 5 == 0:
+                print(f"Epoch: {epoch} \tBatch Index: {batch_idx+1} \tTraining Loss: {train_loss}")
+
+        model.eval()
+        for batch_idx, (data, target) in enumerate(loaders['valid']):
+            # move to GPU
+            if using_cuda:
+                data, target = data.cuda(), target.cuda()
+
+            # forward pass: compute predicted outputs by passing inputs to the model
+            output = model(data)
+            # calculate the loss
+            loss = criterion(output, target)
+            # sum all the correct predictions to find the validation accuracy
+            _, predicted_labels = output.max(1)
+            valid_correct += (predicted_labels == target).float().sum().cpu().numpy()
+            # update running validation loss 
+            valid_loss += (loss.data.item() - valid_loss) / (batch_idx + 1)
+
+        # print training/validation statistics
+        print('Epoch: {} \tTraining Loss: {:.6f} \tTraining Accuracy: {:.6f}% \tValidation Loss: {:.6f} \tValidation Accuracy {:.6f}%'.format(
+            epoch,
+            train_loss,
+            (train_correct/len(loaders["train"].dataset))*100,
+            valid_loss,
+            (valid_correct/len(loaders["valid"].dataset))*100
+            ))
+
+    print(20*"*"+5*" "+"Complete Training"+5*" "+20*"*")
+    print("\n")
+    
+    return model
+
+def test(loaders, model, criterion, using_cuda):
+    print(20*"*"+5*" "+"Test The Model"+5*" "+20*"*")
+
+    # monitor test loss and accuracy
+    test_loss = 0.
+    correct = 0.
+    total = 0.
+
+    # set the module to evaluation mode
+    model.eval()
+    if using_cuda:
+        model.cuda()
+        
+    for batch_idx, (data, target) in enumerate(loaders['test']):
+        # move to GPU
+        if using_cuda:
+            data, target = data.cuda(), target.cuda()
+        # forward pass: compute predicted outputs by passing inputs to the model
+        output = model(data)
+        # calculate the loss
+        loss = criterion(output, target)
+        # update average test loss 
+        test_loss = test_loss + ((1 / (batch_idx + 1)) * (loss.data.item() - test_loss))
+        # convert output probabilities to predicted class
+        pred = output.data.max(1, keepdim=True)[1]
+        # compare predictions to true label
+        correct += np.sum(np.squeeze(pred.eq(target.data.view_as(pred))).cpu().numpy())
+        total += data.size(0)
+            
+    print('Test Loss: {:.6f}\n'.format(test_loss))
+
+    print('\nTest Accuracy: %2d%% (%2d/%2d)' % (
+        100. * correct / total, correct, total))
+    
+    print(20*"*"+5*" "+"Complete Testing"+5*" "+20*"*")
+    print("\n")
+
+def save_checkpoint(model, architecture, class_to_idx):
+    print(20*"*"+5*" "+"Saving The Model"+5*" "+20*"*")
+
+    checkpoint_path = "model.pth"
+
+    #The name of the attribute to change the new_classifier with
+    attribute_to_change = last_layer_name[architecture]
+
+    new_classifier = getattr(model, attribute_to_change)
+
+    checkpoint = {
+    "state_dict": model.state_dict(),
+    "model_architecutre": architecture,
+    "attribute_to_change": attribute_to_change,
+    "new_classifier": new_classifier,
+    "class_to_idx": class_to_idx,
+    }
+
+    torch.save(checkpoint, checkpoint_path)
+
+    print(20*"*"+5*" "+"Complete Saving"+5*" "+20*"*")
+    print("\n")
+
+def using_cuda(use_cuda):
+    cuda_available = torch.cuda.is_available()
+    using_cuda = cuda_available and use_cuda
+
+    if using_cuda:
+        print(20*"$"+" Using Cuda "+20*"$")
+    else:
+        print(20*"$"+" Using CPU "+20*"$")
+
+    print("\n")
+        
+    return using_cuda     
 
 if __name__ == "__main__":
     args = argument_parser()
 
-    data_loaders, num_classes = load_dataset(args.dataset_path)
+    data_loaders, num_classes, class_to_idx = load_dataset(args.dataset_path)
 
     model = model_build(args.architecture, args.nodes, num_classes)
+
+    optimizer, criterion = optimizer_criterion(model.parameters(), args.lr)
+
+    using_cuda = using_cuda(args.cuda)
+
+    model = train_validation(args.epochs, data_loaders, model, optimizer, criterion, using_cuda)
+
+    if args.checkpoint:
+        save_checkpoint(model, args.architecture, class_to_idx)
+
+    test(data_loaders, model, criterion, using_cuda)
+
+    
