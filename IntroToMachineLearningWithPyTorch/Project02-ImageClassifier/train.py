@@ -4,12 +4,11 @@ import numpy as np
 import torch.nn as nn
 import torchvision.models as models
 
-from torch import cuda
 from torchvision import datasets, models, transforms
 
 '''
     Parse all the required options:
-    1. Dataset folder path [-d, --dataset][string]. 
+    1. Dataset folder path [--dataset][string]. 
     (Note: The dataset folder should follow the same hierarchy) 
     Dataset
         ├───test
@@ -21,15 +20,14 @@ from torchvision import datasets, models, transforms
         └───valid
             └───Class1
                 └───image1
-    2. Display accuracies and losses for both the training and validation [-s, --show][boolean].
-    3. Specify architecture name from torchvision.models [-m, --model][string].
+    2. Display accuracies and losses for both the training and validation [--show][boolean].
+    3. Specify architecture name from torchvision.models [--model][string].
     4. Set the training hyperparameters (learning rate, number of hidden units, and epochs).
-    4.1 learning rate [-lr, --learning-rate][float]
-    4.2 number of hidden units [-n, --hidden-nodes][integer]
-    4.3 number of epochs [-e, --epoch][integer]
-    5. Training with GPU [-c, --cuda][boolean]
-    6. Save trained model [-p, --checkpoint][boolean]
-
+    4.1 learning rate [--learning-rate][float]
+    4.2 number of hidden units [--hidden-nodes][integer]
+    4.3 number of epochs [--epoch][integer]
+    5. Training with GPU [--cuda][boolean]
+    6. Save trained model [--checkpoint][boolean]
 '''
 def argument_parser():
     parser = argparse.ArgumentParser(prog="Train Torchvision Model"
@@ -40,9 +38,8 @@ def argument_parser():
     parser.add_argument("--dataset", nargs="?", required=True, type=str, 
                         help="The dataset folder", metavar="path", dest="dataset_path")
     #Display Accuracies and Losses
-    parser.add_argument("--show", nargs="?", default=False, type=bool, 
-                        help="Display accuracies and losses while training", metavar="bool", 
-                        dest="show")
+    parser.add_argument("--show", dest="show", action='store_true',
+                        help="Display accuracies and losses while training")
     #Architecture Name
     parser.add_argument("--model", nargs="?", default="resnet18", type=str,
                         choices=["resnet18", "resent34", "resent50", 
@@ -63,12 +60,11 @@ def argument_parser():
     parser.add_argument("--epochs", nargs="?", default=5, type=int,
                         help="Number of epochs", metavar="epochs", dest="epochs")
     #Use Cuda
-    parser.add_argument("--cuda", nargs="?", default=False, type=bool,
-                        help="Use cuda", metavar="bool", dest="cuda")
+    parser.add_argument("--cuda", default=False, help="Use cuda",
+                        dest="cuda", action='store_true')
     #Save Checkpoint
-    parser.add_argument("--checkpoint", nargs="?", default=False, type=bool,
-                        help="Save the model checkpoint", metavar="bool", 
-                        dest="checkpoint")
+    parser.add_argument("--checkpoint", default=False, help="Save the model checkpoint",
+                        dest="checkpoint", action='store_true')
 
     args = parser.parse_args()
 
@@ -173,7 +169,7 @@ def optimizer_criterion(parameters, learning_rate):
 
     return optimizer, criterion
     
-def train_validation(n_epochs, loaders, model, optimizer, criterion, using_cuda): 
+def train_validation(n_epochs, loaders, model, optimizer, criterion, using_cuda, show): 
     print(20*"*"+5*" "+"Train The Model"+5*" "+20*"*")
    
     for epoch in range(1, n_epochs+1):
@@ -207,7 +203,7 @@ def train_validation(n_epochs, loaders, model, optimizer, criterion, using_cuda)
             # update running training loss
             train_loss += ((1 / (batch_idx + 1)) * (loss.data.item() - train_loss))
             # print updates every 5 batches
-            if (batch_idx + 1) % 5 == 0:
+            if (batch_idx + 1) % 5 == 0 and show:
                 print(f"Epoch: {epoch} \tBatch Index: {batch_idx+1} \tTraining Loss: {train_loss}")
 
         model.eval()
@@ -227,13 +223,21 @@ def train_validation(n_epochs, loaders, model, optimizer, criterion, using_cuda)
             valid_loss += (loss.data.item() - valid_loss) / (batch_idx + 1)
 
         # print training/validation statistics
-        print('Epoch: {} \tTraining Loss: {:.6f} \tTraining Accuracy: {:.6f}% \tValidation Loss: {:.6f} \tValidation Accuracy {:.6f}%'.format(
-            epoch,
-            train_loss,
-            (train_correct/len(loaders["train"].dataset))*100,
-            valid_loss,
-            (valid_correct/len(loaders["valid"].dataset))*100
-            ))
+        if show:
+            print('Epoch: {} \tTraining Loss: {:.6f} \tTraining Accuracy: {:.6f}% \tValidation Loss: {:.6f} \tValidation Accuracy {:.6f}%'.format(
+                epoch,
+                train_loss,
+                (train_correct/len(loaders["train"].dataset))*100,
+                valid_loss,
+                (valid_correct/len(loaders["valid"].dataset))*100
+                ))
+
+    print('Training Loss: {:.6f} \tTraining Accuracy: {:.6f}% \tValidation Loss: {:.6f} \tValidation Accuracy {:.6f}%'.format(
+                train_loss,
+                (train_correct/len(loaders["train"].dataset))*100,
+                valid_loss,
+                (valid_correct/len(loaders["valid"].dataset))*100
+                ))
 
     print(20*"*"+5*" "+"Complete Training"+5*" "+20*"*")
     print("\n")
@@ -304,7 +308,7 @@ def using_cuda(use_cuda):
     cuda_available = torch.cuda.is_available()
     using_cuda = cuda_available and use_cuda
 
-    if using_cuda:
+    if cuda_available and using_cuda:
         print(20*"$"+" Using Cuda "+20*"$")
     else:
         print(20*"$"+" Using CPU "+20*"$")
@@ -324,7 +328,7 @@ if __name__ == "__main__":
 
     using_cuda = using_cuda(args.cuda)
 
-    model = train_validation(args.epochs, data_loaders, model, optimizer, criterion, using_cuda)
+    model = train_validation(args.epochs, data_loaders, model, optimizer, criterion, using_cuda, args.show)
 
     if args.checkpoint:
         save_checkpoint(model, args.architecture, class_to_idx)
